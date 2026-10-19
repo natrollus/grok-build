@@ -181,6 +181,7 @@ The agent sends push notifications to clients for real-time updates:
 |------------|----------|--------|
 | `model` | `model` | Switches the session model (`allowed_models`, chat gateway routing). Value must be a string id. |
 | `reasoning_effort` | `thought_level` | Applies effort to the current model without changing the model (no prompt rewrite, no `allowed_models` gate). Value must be a string id (`minimal`, `low`, `medium`, `high`, `xhigh`). Dropped with a warning when the model does not advertise `supportsReasoningEffort`. |
+| `permission_mode` | `mode` | Live permission posture. String ids: `ask` (Default), `auto` (omitted when the auto feature is off, unless the session is already in auto), `always-approve` (shown as YOLO). Deny rules and hooks still apply. A managed always-approve pin rejects `always-approve`. `acceptEdits` is not a row: it is applied only as a startup rule. |
 
 ```json
 {
