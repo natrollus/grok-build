@@ -3368,11 +3368,27 @@ impl MvpAgent {
         state: &acp::SessionModelState,
     ) -> Vec<acp::SessionConfigOption> {
         let inputs = self.session_config_inputs(session_id, state);
+        let permission = match session_id.and_then(|id| self.resident_handle(id)) {
+            Some(handle) => {
+                let yolo = handle.permission_handle.is_yolo_mode();
+                session_config::PermissionModeView {
+                    yolo,
+                    auto: !yolo && handle.permission_handle.is_auto_mode(),
+                    auto_available: crate::util::config::auto_permission_mode_enabled_from_disk(),
+                }
+            }
+            None => session_config::PermissionModeView {
+                yolo: self.default_yolo_mode,
+                auto: false,
+                auto_available: crate::util::config::auto_permission_mode_enabled_from_disk(),
+            },
+        };
         session_config::build_acp_config_options(
             &state.available_models,
             &inputs.model_id,
             &inputs.effort_options,
             inputs.current_effort,
+            permission,
         )
     }
     /// Resolve an effort selector against `model_id`'s menu (not a fresh session lookup, which

@@ -14,6 +14,22 @@ pub(crate) const SELECTABLE_REASONING_EFFORTS: [ReasoningEffort; 5] = [
 
 pub(crate) const CONFIG_ID_MODEL: &str = "model";
 pub(crate) const CONFIG_ID_REASONING_EFFORT: &str = "reasoning_effort";
+pub(crate) const CONFIG_ID_PERMISSION_MODE: &str = "permission_mode";
+
+pub(crate) const PERMISSION_MODE_ASK: &str = "ask";
+pub(crate) const PERMISSION_MODE_AUTO: &str = "auto";
+pub(crate) const PERMISSION_MODE_YOLO: &str = "always-approve";
+
+/// Live permission posture advertised as an ACP `category: mode` select.
+///
+/// `acceptEdits` is not a runtime switch (it is a startup rule), so it is not a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PermissionModeView {
+    pub yolo: bool,
+    pub auto: bool,
+    /// When false, the Auto row is omitted unless the session is already in auto.
+    pub auto_available: bool,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,11 +124,47 @@ pub(crate) fn build_session_config_options(
     options
 }
 
+/// Current select id. Always-approve wins over auto, matching the permission manager.
+pub(crate) fn permission_mode_current(view: PermissionModeView) -> &'static str {
+    if view.yolo {
+        PERMISSION_MODE_YOLO
+    } else if view.auto {
+        PERMISSION_MODE_AUTO
+    } else {
+        PERMISSION_MODE_ASK
+    }
+}
+
+fn permission_mode_option(view: PermissionModeView) -> acp::SessionConfigOption {
+    let mut values = vec![acp::SessionConfigSelectOption::new(PERMISSION_MODE_ASK, "Default")
+        .description("Prompt before tools that change something")];
+    if view.auto_available || view.auto {
+        values.push(
+            acp::SessionConfigSelectOption::new(PERMISSION_MODE_AUTO, "Auto").description(
+                "Classifier approves calls it judges safe. Dangerous calls may still prompt",
+            ),
+        );
+    }
+    values.push(
+        acp::SessionConfigSelectOption::new(PERMISSION_MODE_YOLO, "YOLO").description(
+            "Run tools without permission prompts. Deny rules and hooks still apply",
+        ),
+    );
+    acp::SessionConfigOption::select(
+        CONFIG_ID_PERMISSION_MODE,
+        "Permission",
+        permission_mode_current(view),
+        values,
+    )
+    .category(acp::SessionConfigOptionCategory::Mode)
+}
+
 pub(crate) fn build_acp_config_options(
     available_models: &[acp::ModelInfo],
     current_model_id: &acp::ModelId,
     effort_options: &[ReasoningEffortOption],
     current_effort: Option<ReasoningEffort>,
+    permission_mode: PermissionModeView,
 ) -> Vec<acp::SessionConfigOption> {
     let mut options = Vec::new();
 
@@ -144,13 +196,11 @@ pub(crate) fn build_acp_config_options(
                 .map(|option| option.id.clone())
                 .unwrap_or_else(|| effort.as_ref().to_string()),
             None => {
-                let Some(option) = effort_options
+                let option = effort_options
                     .iter()
                     .find(|option| option.default)
                     .or(effort_options.first())
-                else {
-                    return options;
-                };
+                    .expect("effort_options is non-empty");
                 option.id.clone()
             }
         };
@@ -176,6 +226,7 @@ pub(crate) fn build_acp_config_options(
         );
     }
 
+    options.push(permission_mode_option(permission_mode));
     options
 }
 
@@ -307,11 +358,17 @@ mod tests {
             default: false,
         }];
 
+        let permission = PermissionModeView {
+            yolo: false,
+            auto: false,
+            auto_available: true,
+        };
         let options = build_acp_config_options(
             &models,
             &acp::ModelId::from("grok-4.5"),
             &efforts,
             Some(ReasoningEffort::High),
+            permission,
         );
 
         let expected = vec![
@@ -332,8 +389,48 @@ mod tests {
                 vec![acp::SessionConfigSelectOption::new("high", "High")],
             )
             .category(acp::SessionConfigOptionCategory::ThoughtLevel),
+            permission_mode_option(permission),
         ];
         assert_eq!(options, expected);
+    }
+
+    #[test]
+    fn permission_mode_current_prefers_yolo_and_hides_auto_when_unavailable() {
+        assert_eq!(
+            permission_mode_current(PermissionModeView {
+                yolo: true,
+                auto: true,
+                auto_available: true,
+            }),
+            PERMISSION_MODE_YOLO
+        );
+        assert_eq!(
+            permission_mode_current(PermissionModeView {
+                yolo: false,
+                auto: true,
+                auto_available: false,
+            }),
+            PERMISSION_MODE_AUTO
+        );
+        let hidden = permission_mode_option(PermissionModeView {
+            yolo: false,
+            auto: false,
+            auto_available: false,
+        });
+        let v = serde_json::to_value(&hidden).expect("serialize");
+        assert_eq!(v.get("category").and_then(|c| c.as_str()), Some("mode"));
+        assert_eq!(
+            v.get("currentValue").and_then(|c| c.as_str()),
+            Some(PERMISSION_MODE_ASK)
+        );
+        let ids: Vec<_> = v
+            .get("options")
+            .and_then(|o| o.as_array())
+            .expect("flat options array")
+            .iter()
+            .filter_map(|option| option.get("value").and_then(|value| value.as_str()))
+            .collect();
+        assert_eq!(ids, vec![PERMISSION_MODE_ASK, PERMISSION_MODE_YOLO]);
     }
 
     #[test]
@@ -351,6 +448,11 @@ mod tests {
             &acp::ModelId::from("grok-4.5"),
             &efforts,
             Some(ReasoningEffort::Low),
+            PermissionModeView {
+                yolo: true,
+                auto: false,
+                auto_available: false,
+            },
         );
         let effort = options
             .iter()
@@ -370,8 +472,17 @@ mod tests {
             model("grok-build", "Grok Build"),
             model("grok-4.5", "Grok 4.5"),
         ];
-        let options =
-            build_acp_config_options(&models, &acp::ModelId::from("stale-model"), &[], None);
+        let options = build_acp_config_options(
+            &models,
+            &acp::ModelId::from("stale-model"),
+            &[],
+            None,
+            PermissionModeView {
+                yolo: false,
+                auto: false,
+                auto_available: false,
+            },
+        );
         let model = options
             .iter()
             .find(|o| o.id.0.as_ref() == CONFIG_ID_MODEL)

@@ -71,7 +71,7 @@ Skips ordinary permission prompts so tools run without waiting for a click. `den
 | CLI | `--always-approve` (alias `--yolo`), or `--permission-mode bypassPermissions` |
 | Config | `[ui] permission_mode = "always-approve"` |
 | Interactive | `/always-approve`, `Ctrl+O` |
-| ACP | `_meta.yoloMode: true` on `session/new` |
+| ACP | `_meta.yoloMode: true` on `session/new`, or `session/set_config_option` with `configId: permission_mode` and value `ask`, `auto`, or `always-approve` |
 
 #### Always-approve with hard limits
 
